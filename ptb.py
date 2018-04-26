@@ -13,7 +13,7 @@ class PTB(Dataset):
 
     def __init__(self, data_dir, split, create_data, **kwargs):
 
-        super().__init__()
+        super(PTB, self).__init__()
         self.data_dir = data_dir
         self.split = split
         self.max_sequence_length = kwargs.get('max_sequence_length', 50)

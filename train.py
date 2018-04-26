@@ -5,6 +5,7 @@ import json
 import time
 import random
 import argparse
+import ipdb as pdb
 import logging as log
 
 import torch
@@ -17,6 +18,8 @@ from collections import OrderedDict, defaultdict
 from ptb import PTB
 from utils import to_var, idx2word, expierment_name
 from model import SentenceVAE
+
+SCR_PREFIX = '/misc/vlgscratch4/BowmanGroup/awang/'
 
 def kl_anneal_function(anneal_function, step, k, x0):
     if anneal_function == 'logistic':
@@ -43,14 +46,16 @@ def main(arguments):
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--seed', help='random seed', type=int, default=19)
+    parser.add_argument('--run_name', help='prefix to save ckpts to', type=str,
+                        default=SCR_PREFIX + 'ckpts/svae/test/')
     parser.add_argument('--data_dir', type=str, default='data')
     parser.add_argument('--create_data', action='store_true')
     parser.add_argument('--max_sequence_length', type=int, default=60)
     parser.add_argument('--min_occ', type=int, default=1)
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('-ep', '--epochs', type=int, default=10)
-    parser.add_argument('-bs', '--batch_size', type=int, default=32)
+    parser.add_argument('-ep', '--epochs', type=int, default=20)
+    parser.add_argument('-bs', '--batch_size', type=int, default=128)
     parser.add_argument('-lr', '--learning_rate', type=float, default=0.001)
 
     parser.add_argument('-eb', '--embedding_size', type=int, default=300)
@@ -78,7 +83,7 @@ def main(arguments):
     log.info(args)
     ts = time.strftime('%Y-%b-%d-%H:%M:%S', time.gmtime())
 
-    seed = random.randint(1, 10000) if args.random_seed < 0 else args.seed
+    seed = random.randint(1, 10000) if args.seed < 0 else args.seed
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -94,12 +99,12 @@ def main(arguments):
             max_sequence_length=args.max_sequence_length,
             min_occ=args.min_occ)
 
-    model = SentenceVAE(
-        vocab_size=datasets['train'].vocab_size,
-        sos_idx=datasets['train'].sos_idx,
-        eos_idx=datasets['train'].eos_idx,
-        pad_idx=datasets['train'].pad_idx,
-        max_sequence_length=args.max_sequence_length,
+    model = SentenceVAE(datasets['train'].get_w2i(),
+        #vocab_size=datasets['train'].vocab_size,
+        #sos_idx=datasets['train'].sos_idx,
+        #eos_idx=datasets['train'].eos_idx,
+        #pad_idx=datasets['train'].pad_idx,
+        #max_sequence_length=args.max_sequence_length,
         embedding_size=args.embedding_size,
         rnn_type=args.rnn_type,
         hidden_size=args.hidden_size,
@@ -116,8 +121,9 @@ def main(arguments):
         writer.add_text("model", str(model))
         writer.add_text("args", str(args))
         writer.add_text("ts", ts)
-    save_model_path = os.path.join(args.save_model_path, ts)
-    os.makedirs(save_model_path)
+    save_model_path = os.path.join(args.save_model_path, args.run_name)
+    if not os.path.exists(save_model_path):
+        os.makedirs(save_model_path)
 
     NLL = torch.nn.NLLLoss(size_average=False, ignore_index=datasets['train'].pad_idx)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -175,8 +181,9 @@ def main(arguments):
                     writer.add_scalar("%s/KL Weight"%split.upper(), KL_weight, epoch*len(data_loader) + iteration)
 
                 if iteration % args.print_every == 0 or iteration+1 == len(data_loader):
-                    print("%s Batch %04d/%i, Loss %9.4f, NLL-Loss %9.4f, KL-Loss %9.4f, KL-Weight %6.3f"
-                        %(split.upper(), iteration, len(data_loader)-1, loss.data[0], NLL_loss.data[0]/batch_size, KL_loss.data[0]/batch_size, KL_weight))
+                    log.info("%s Batch %04d/%i, Loss %9.4f, NLL-Loss %9.4f, KL-Loss %9.4f, KL-Weight %6.3f"
+                        % (split.upper(), iteration, len(data_loader)-1, loss.data[0],
+                           NLL_loss.data[0]/batch_size, KL_loss.data[0]/batch_size, KL_weight))
 
                 if split == 'valid':
                     if 'target_sents' not in tracker:

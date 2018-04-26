@@ -1,20 +1,38 @@
+''' Model architectures
+
+TODO:
+    - SentencEAE
+
+'''
+import ipdb as pdb
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.utils.rnn as rnn_utils
-from utils import to_var
+from torch.autograd import Variable
+#from utils import to_var
+
+def to_var(x, volatile=False):
+    if torch.cuda.is_available():
+        x = x.cuda()
+    return Variable(x, volatile=volatile)
 
 class SentenceVAE(nn.Module):
 
-    def __init__(self, vocab_size, embedding_size, rnn_type, hidden_size, word_dropout, latent_size,
-                sos_idx, eos_idx, pad_idx, max_sequence_length, num_layers=1, bidirectional=False):
+    #def __init__(self, vocab_size, embedding_size, rnn_type, hidden_size, word_dropout, latent_size,
+    #            sos_idx, eos_idx, pad_idx, max_sequence_length, num_layers=1, bidirectional=False):
+    def __init__(self, word2idx, embedding_size, rnn_type, hidden_size, word_dropout, latent_size,
+                 num_layers=1, bidirectional=False):
 
         super(SentenceVAE, self).__init__()
         self.tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor
 
-        self.max_sequence_length = max_sequence_length
-        self.sos_idx = sos_idx
-        self.eos_idx = eos_idx
-        self.pad_idx = pad_idx
+        self.word2idx = word2idx
+        self.sos_idx = word2idx['<sos>'] #sos_idx
+        self.eos_idx = word2idx['<eos>'] #eos_idx
+        self.pad_idx = word2idx['<pad>'] #pad_idx
+        vocab_size = len(word2idx)
+        #self.max_sequence_length = max_sequence_length
 
         self.latent_size = latent_size
 
@@ -45,8 +63,32 @@ class SentenceVAE(nn.Module):
         self.latent2hidden = nn.Linear(latent_size, hidden_size * self.hidden_factor)
         self.outputs2vocab = nn.Linear(hidden_size * (2 if bidirectional else 1), vocab_size)
 
-    def forward(self, input_sequence, length):
+    def prepare_batch(self, sentences, add_sentinels=True):
+        ''' Prepare sentences for model
 
+        args:
+            - sentences List[List[str]]
+            - add_sentinels: True if add <sos>, <eos>
+        '''
+        batch_size = len(sentences)
+        #max_len = max([len(s) for s in sentences])
+        lens_and_sents = [(len(s), s, idx) for idx, s in enumerate(sentences)]
+        lens_and_sents.sort(key=lambda x: x[0], reverse=True)
+        sentences = [s for _, s, _ in lens_and_sents]
+        lengths = [l for l, _, _ in lens_and_sents]
+        max_len = lengths[0]
+        unsort = [i for _, _, i in lens_and_sents]
+        if add_sentinels:
+            sentences = [['<sos>'] + s + ['<eos>'] for s in sentences]
+            lengths = [l + 2 for l in lengths]
+            max_len += 2
+        idx_sents = [[self.word2idx[w] if w in self.word2idx else self.word2idx['<unk>'] for w in s] for s in sentences]
+        for idx_sent in idx_sents:
+            idx_sent += [self.word2idx['<pad>']] * (max_len - len(idx_sent))
+        batch = Variable(self.tensor(idx_sents).long())
+        return batch, lengths, unsort
+
+    def forward(self, input_sequence, length):
         batch_size = input_sequence.size(0)
         sorted_lengths, sorted_idx = torch.sort(length, descending=True)
         input_sequence = input_sequence[sorted_idx]
@@ -55,7 +97,6 @@ class SentenceVAE(nn.Module):
         input_embedding = self.embedding(input_sequence)
 
         packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
-
         _, hidden = self.encoder_rnn(packed_input)
 
         if self.bidirectional or self.num_layers > 1:
@@ -102,11 +143,36 @@ class SentenceVAE(nn.Module):
 
         return logp, mean, logv, z
 
-    def encode(self):
-        raise NotImplementedError
+    def encode(self, sentences, batch_size=64):
+        ''' Given a batch of input sequences, return mean and std_dev vectors '''
+        means, std_devs = [], []
+        for b_idx in range(0, len(sentences), batch_size):
+            batch, lengths, unsort = self.prepare_batch(sentences[b_idx*batch_size:(b_idx+1)*batch_size])
+
+            # ENCODE
+            input_embedding = self.embedding(batch)
+            packed_input = rnn_utils.pack_padded_sequence(input_embedding, lengths, batch_first=True)
+            _, hidden = self.encoder_rnn(packed_input)
+
+            if self.bidirectional or self.num_layers > 1:
+                # flatten hidden state
+                hidden = hidden.view(batch_size, self.hidden_size*self.hidden_factor)
+            else:
+                hidden = hidden.squeeze(0) # I think
+
+            # REPARAMETERIZATION
+            mean = self.hidden2mean(hidden).data.cpu().numpy()
+            logv = self.hidden2logv(hidden)
+            std = torch.exp(0.5 * logv).data.cpu().numpy()
+            idx_unsort = np.argsort(unsort)
+            means.append(mean[idx_unsort])
+            std_devs.append(std[idx_unsort])
+        means = np.vstack(means)
+        std_devs = np.vstack(means)
+        return means, std_devs
 
 
-    def inference(self, n=4, z=None):
+    def inference(self, n=4, z=None, max_seq_len=50):
 
         if z is None:
             batch_size = n
@@ -129,10 +195,10 @@ class SentenceVAE(nn.Module):
 
         running_seqs = torch.arange(0, batch_size, out=self.tensor()).long() # idx of still generating sequences with respect to current loop
 
-        generations = self.tensor(batch_size, self.max_sequence_length).fill_(self.pad_idx).long()
+        generations = self.tensor(batch_size, self.max_seq_len).fill_(self.pad_idx).long()
 
         t=0
-        while(t<self.max_sequence_length and len(running_seqs)>0):
+        while(t<self.max_seq_len and len(running_seqs)>0):
 
             if t == 0:
                 input_sequence = to_var(torch.Tensor(batch_size).fill_(self.sos_idx).long())

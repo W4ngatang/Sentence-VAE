@@ -17,7 +17,6 @@ def to_var(x, volatile=False):
         x = x.cuda()
     return Variable(x, volatile=volatile)
 
-
 def idx2word(idx, i2w, pad_idx):
 
     sent_str = [str()]*len(idx)
