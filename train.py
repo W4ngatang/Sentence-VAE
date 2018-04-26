@@ -9,6 +9,7 @@ import ipdb as pdb
 import logging as log
 
 import torch
+import torch.optim as optim
 import numpy as np
 from multiprocessing import cpu_count
 from tensorboardX import SummaryWriter
@@ -56,7 +57,10 @@ def main(arguments):
 
     parser.add_argument('-ep', '--epochs', type=int, default=20)
     parser.add_argument('-bs', '--batch_size', type=int, default=128)
+    parser.add_argument('-o', '--optimizer', type=str, choices=['sgd', 'adam'], default='adam')
     parser.add_argument('-lr', '--learning_rate', type=float, default=0.001)
+    parser.add_argument('--lr_decay_factor', type=float, default=0.5)
+    parser.add_argument('-p', '--patience', type=int, default=5)
 
     parser.add_argument('-eb', '--embedding_size', type=int, default=300)
     parser.add_argument('-rnn', '--rnn_type', type=str, choices=['rnn', 'lstm', 'gru'],
@@ -72,10 +76,10 @@ def main(arguments):
     parser.add_argument('-k', '--k', type=float, default=0.0025)
     parser.add_argument('-x0', '--x0', type=int, default=2500)
 
-    parser.add_argument('-v','--print_every', type=int, default=50)
-    parser.add_argument('-tb','--tensorboard_logging', action='store_true')
-    parser.add_argument('-log','--logdir', type=str, default='logs')
-    parser.add_argument('-bin','--save_model_path', type=str, default='bin')
+    parser.add_argument('-v', '--print_every', type=int, default=50)
+    parser.add_argument('-tb', '--tensorboard_logging', action='store_true')
+    parser.add_argument('-log', '--logdir', type=str, default='logs')
+    parser.add_argument('-bin', '--save_model_path', type=str, default='bin')
 
     args = parser.parse_args(arguments)
 
@@ -100,11 +104,6 @@ def main(arguments):
             min_occ=args.min_occ)
 
     model = SentenceVAE(datasets['train'].get_w2i(),
-        #vocab_size=datasets['train'].vocab_size,
-        #sos_idx=datasets['train'].sos_idx,
-        #eos_idx=datasets['train'].eos_idx,
-        #pad_idx=datasets['train'].pad_idx,
-        #max_sequence_length=args.max_sequence_length,
         embedding_size=args.embedding_size,
         rnn_type=args.rnn_type,
         hidden_size=args.hidden_size,
@@ -126,10 +125,20 @@ def main(arguments):
         os.makedirs(save_model_path)
 
     NLL = torch.nn.NLLLoss(size_average=False, ignore_index=datasets['train'].pad_idx)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=args.learning_rate)
+    elif args.optimizer == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+                                                     factor=args.lr_decay_factor,
+                                                     patience=0,
+                                                     verbose=True)
     tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor
-    step = 0
+    step, stop_training = 0, 0
+    global_tracker = {'best_epoch': -1, 'best_score': -1, 'history': []}
     for epoch in range(args.epochs):
+        if stop_training:
+            break
         for split in splits:
             data_loader = DataLoader(
                 dataset=datasets[split],
@@ -143,14 +152,15 @@ def main(arguments):
 
             # Enable/Disable Dropout
             if split == 'train':
+                log.info("***** Epoch %02d *****", epoch)
+                log.info("Training...")
                 model.train()
             else:
+                log.info("Validating...")
                 model.eval()
 
             for iteration, batch in enumerate(data_loader):
-
                 batch_size = batch['input'].size(0)
-
                 for k, v in batch.items():
                     if torch.is_tensor(v):
                         batch[k] = to_var(v)
@@ -161,8 +171,9 @@ def main(arguments):
                 # loss calculation
                 NLL_loss, KL_loss, KL_weight = loss_fn(NLL, logp, batch['target'],
                     batch['length'], mean, logv, args.anneal_function, step, args.k, args.x0)
-
-                loss = (NLL_loss + KL_weight * KL_loss)/batch_size
+                loss = (NLL_loss + KL_weight * KL_loss) / batch_size
+                NLL_loss /= batch_size
+                KL_loss /= batch_size
 
                 # backward + optimization
                 if split == 'train':
@@ -173,28 +184,33 @@ def main(arguments):
 
                 # bookkeepeing
                 tracker['ELBO'] = torch.cat((tracker['ELBO'], loss.data))
+                tracker['NLL'] = torch.cat((tracker['NLL'], NLL_loss.data))
+                tracker['KL'] = torch.cat((tracker['NLL'], KL_loss.data))
+                loss = loss.data[0]
+                NLL_loss = NLL_loss.data[0]
+                KL_loss = KL_loss.data[0]
 
                 if args.tensorboard_logging:
-                    writer.add_scalar("%s/ELBO"%split.upper(), loss.data[0], epoch*len(data_loader) + iteration)
-                    writer.add_scalar("%s/NLL Loss"%split.upper(), NLL_loss.data[0]/batch_size, epoch*len(data_loader) + iteration)
-                    writer.add_scalar("%s/KL Loss"%split.upper(), KL_loss.data[0]/batch_size, epoch*len(data_loader) + iteration)
+                    writer.add_scalar("%s/ELBO"%split.upper(), loss, epoch*len(data_loader) + iteration)
+                    writer.add_scalar("%s/NLL Loss"%split.upper(), NLL_loss, epoch*len(data_loader) + iteration)
+                    writer.add_scalar("%s/KL Loss"%split.upper(), KL_loss, epoch*len(data_loader) + iteration)
                     writer.add_scalar("%s/KL Weight"%split.upper(), KL_weight, epoch*len(data_loader) + iteration)
 
-                if iteration % args.print_every == 0 or iteration+1 == len(data_loader):
-                    log.info("%s Batch %04d/%i, Loss %9.4f, NLL-Loss %9.4f, KL-Loss %9.4f, KL-Weight %6.3f"
-                        % (split.upper(), iteration, len(data_loader)-1, loss.data[0],
-                           NLL_loss.data[0]/batch_size, KL_loss.data[0]/batch_size, KL_weight))
+                if iteration % args.print_every == 0 or iteration + 1 == len(data_loader):
+                    log.info("  Batch %04d/%i\tLoss %9.4f\tNLL-Loss %9.4f\tKL-Loss %9.4f\tKL-Weight %6.3f",
+                        iteration, len(data_loader)-1, loss, NLL_loss, KL_loss, KL_weight)
 
-                if split == 'valid':
+                if split == 'valid': # store the dev sentences?
                     if 'target_sents' not in tracker:
                         tracker['target_sents'] = list()
-                    tracker['target_sents'] += idx2word(batch['target'].data, i2w=datasets['train'].get_i2w(), pad_idx=datasets['train'].pad_idx)
+                    tracker['target_sents'] += idx2word(batch['target'].data, \
+                            i2w=datasets['train'].get_i2w(), pad_idx=datasets['train'].pad_idx)
                     tracker['z'] = torch.cat((tracker['z'], z.data), dim=0)
 
-            print("%s Epoch %02d/%i, Mean ELBO %9.4f"%(split.upper(), epoch, args.epochs, torch.mean(tracker['ELBO'])))
+            log.info("  Mean ELBO %9.4f, NLL: %9.4f", torch.mean(tracker['ELBO']), torch.mean(tracker['NLL']))
 
             if args.tensorboard_logging:
-                writer.add_scalar("%s-Epoch/ELBO"%split.upper(), torch.mean(tracker['ELBO']), epoch)
+                writer.add_scalar("%s-Epoch/ELBO" % split.upper(), torch.mean(tracker['ELBO']), epoch)
 
             # save a dump of all sentences and the encoded latent space
             if split == 'valid':
@@ -202,14 +218,20 @@ def main(arguments):
                 if not os.path.exists(os.path.join('dumps', ts)):
                     os.makedirs('dumps/' + ts)
                 with open(os.path.join('dumps/'+ ts +'/valid_E%i.json'%epoch), 'w') as dump_file:
-                    json.dump(dump,dump_file)
-
-            # save checkpoint
-            if split == 'train':
-                checkpoint_path = os.path.join(save_model_path, "E%i.pytorch"%(epoch))
-                torch.save(model.state_dict(), checkpoint_path)
-                print("Model saved at %s"%checkpoint_path)
-
+                    json.dump(dump, dump_file)
+                if loss < global_tracker['best_score'] or global_tracker['best_score'] < 0:
+                    log.info("  Best model found")
+                    global_tracker['best_epoch'] = epoch
+                    global_tracker['best_score'] = loss
+                    checkpoint_path = os.path.join(save_model_path, "best.mdl")
+                    torch.save(model.state_dict(), checkpoint_path)
+                if KL_weight >= 1:
+                    if len(global_tracker['history']) >= args.patience and \
+                            loss > min(global_tracker['history'][-args.patience:]):
+                        log.info("Ran out of patience!")
+                        stop_training = 1
+                    global_tracker['history'].append(loss)
+                    scheduler.step(loss, epoch)
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv[1:]))

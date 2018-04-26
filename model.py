@@ -97,13 +97,16 @@ class SentenceVAE(nn.Module):
         input_embedding = self.embedding(input_sequence)
 
         packed_input = rnn_utils.pack_padded_sequence(input_embedding, sorted_lengths.data.tolist(), batch_first=True)
-        _, hidden = self.encoder_rnn(packed_input)
+        _, hidden = self.encoder_rnn(packed_input) # they throw away the output; (n_layers * n_dir, batch_size, d_hid)
 
+        hidden = hidden.transpose(0, 1).contiguous().view(batch_size, -1)
+        '''
         if self.bidirectional or self.num_layers > 1:
             # flatten hidden state
             hidden = hidden.view(batch_size, self.hidden_size*self.hidden_factor)
         else:
             hidden = hidden.squeeze()
+        '''
 
         # REPARAMETERIZATION
         mean = self.hidden2mean(hidden)
@@ -116,11 +119,14 @@ class SentenceVAE(nn.Module):
         # DECODER
         hidden = self.latent2hidden(z)
 
+        hidden = hidden.view(batch_size, self.hidden_factor, self.hidden_size).transpose(0, 1).contiguous()
+        '''
         if self.bidirectional or self.num_layers > 1:
             # unflatten hidden state
             hidden = hidden.view(self.hidden_factor, batch_size, self.hidden_size)
         else:
             hidden = hidden.unsqueeze(0)
+        '''
 
         # decoder input
         input_embedding = self.word_dropout(input_embedding)
@@ -195,10 +201,10 @@ class SentenceVAE(nn.Module):
 
         running_seqs = torch.arange(0, batch_size, out=self.tensor()).long() # idx of still generating sequences with respect to current loop
 
-        generations = self.tensor(batch_size, self.max_seq_len).fill_(self.pad_idx).long()
+        generations = self.tensor(batch_size, max_seq_len).fill_(self.pad_idx).long()
 
-        t=0
-        while(t<self.max_seq_len and len(running_seqs)>0):
+        t = 0
+        while(t < max_seq_len and len(running_seqs)>0):
 
             if t == 0:
                 input_sequence = to_var(torch.Tensor(batch_size).fill_(self.sos_idx).long())

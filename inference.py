@@ -14,12 +14,12 @@ def main(args):
 
     w2i, i2w = vocab['w2i'], vocab['i2w']
 
-    model = SentenceVAE(
-        vocab_size=len(w2i),
-        sos_idx=w2i['<sos>'],
-        eos_idx=w2i['<eos>'],
-        pad_idx=w2i['<pad>'],
-        max_sequence_length=args.max_sequence_length,
+    model = SentenceVAE(w2i,
+        #vocab_size=len(w2i),
+        #sos_idx=w2i['<sos>'],
+        #eos_idx=w2i['<eos>'],
+        #pad_idx=w2i['<pad>'],
+        #max_sequence_length=args.max_sequence_length,
         embedding_size=args.embedding_size,
         rnn_type=args.rnn_type,
         hidden_size=args.hidden_size,
@@ -37,10 +37,10 @@ def main(args):
 
     if torch.cuda.is_available():
         model = model.cuda()
-    
+
     model.eval()
 
-    samples, z = model.inference(n=args.num_samples)
+    samples, z = model.inference(n=args.num_samples, max_seq_len=args.max_sequence_length)
     print('----------SAMPLES----------')
     print(*idx2word(samples, i2w=i2w, pad_idx=w2i['<pad>']), sep='\n')
 
