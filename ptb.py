@@ -133,7 +133,7 @@ class PTB(Dataset):
 
     def _create_vocab(self):
 
-        assert self.split == 'train', "Vocablurary can only be created for training file."
+        assert self.split == 'train', "Vocabulary can only be created for training file."
 
         tokenizer = TweetTokenizer(preserve_case=False)
 
@@ -159,7 +159,7 @@ class PTB(Dataset):
 
         assert len(w2i) == len(i2w)
 
-        print("Vocablurary of %i keys created." %len(w2i))
+        print("Vocabulary of %i keys created." %len(w2i))
 
         vocab = dict(w2i=w2i, i2w=i2w)
         with io.open(os.path.join(self.data_dir, self.vocab_file), 'wb') as vocab_file:
