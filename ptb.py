@@ -1,10 +1,12 @@
 import os
 import io
 import json
+import ipdb as pdb
 import torch
 import numpy as np
 from collections import defaultdict
 from torch.utils.data import Dataset
+import nltk
 from nltk.tokenize import TweetTokenizer
 
 from utils import OrderedCounter
@@ -18,9 +20,10 @@ class PTB(Dataset):
         self.split = split
         self.max_sequence_length = kwargs.get('max_sequence_length', 50)
         self.min_occ = kwargs.get('min_occ', 3)
+        self.max_vocab_size = kwargs.get('max_vocab_size', 30000)
 
         self.raw_data_path = os.path.join(data_dir, 'ptb.'+split+'.txt')
-        self.data_file = 'ptb.'+split+'.json'
+        self.data_file = os.path.join(data_dir, 'ptb.'+split+'.json')
         self.vocab_file = 'ptb.vocab.json'
 
         if create_data:
@@ -96,14 +99,12 @@ class PTB(Dataset):
         else:
             self._load_vocab()
 
-        tokenizer = TweetTokenizer(preserve_case=False)
-
         data = defaultdict(dict)
         with open(self.raw_data_path, 'r') as file:
 
             for i, line in enumerate(file):
 
-                words = tokenizer.tokenize(line)
+                words = nltk.word_tokenize(line)
 
                 input = ['<sos>'] + words
                 input = input[:self.max_sequence_length]
@@ -111,7 +112,7 @@ class PTB(Dataset):
                 target = words[:self.max_sequence_length-1]
                 target = target + ['<eos>']
 
-                assert len(input) == len(target), "%i, %i"%(len(input), len(target))
+                assert len(input) == len(target), "%i, %i" % (len(input), len(target))
                 length = len(input)
 
                 input.extend(['<pad>'] * (self.max_sequence_length-length))
@@ -135,8 +136,6 @@ class PTB(Dataset):
 
         assert self.split == 'train', "Vocabulary can only be created for training file."
 
-        tokenizer = TweetTokenizer(preserve_case=False)
-
         w2c = OrderedCounter()
         w2i = dict()
         i2w = dict()
@@ -149,17 +148,18 @@ class PTB(Dataset):
         with open(self.raw_data_path, 'r') as file:
 
             for i, line in enumerate(file):
-                words = tokenizer.tokenize(line)
+                words = nltk.word_tokenize(line)
                 w2c.update(words)
 
-            for w, c in w2c.items():
-                if c > self.min_occ:
-                    i2w[len(w2i)] = w
-                    w2i[w] = len(w2i)
+            word_freq_pairs = [(word, freq) for word, freq in w2c.items()]
+            word_freq_pairs.sort(key=lambda x: x[1], reverse=True)
+            for word, freq in word_freq_pairs[:self.max_vocab_size - len(special_tokens)]:
+                i2w[len(w2i)] = word
+                w2i[word] = len(w2i)
 
         assert len(w2i) == len(i2w)
 
-        print("Vocabulary of %i keys created." %len(w2i))
+        print("Vocabulary of %i keys created." % len(w2i))
 
         vocab = dict(w2i=w2i, i2w=i2w)
         with io.open(os.path.join(self.data_dir, self.vocab_file), 'wb') as vocab_file:

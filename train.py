@@ -51,8 +51,9 @@ def main(arguments):
                         default=SCR_PREFIX + 'ckpts/svae/test/')
     parser.add_argument('--data_dir', type=str, default='data')
     parser.add_argument('--create_data', action='store_true')
-    parser.add_argument('--max_sequence_length', type=int, default=60)
+    parser.add_argument('--max_sequence_length', type=int, default=40)
     parser.add_argument('--min_occ', type=int, default=1)
+    parser.add_argument('--max_vocab_size', type=int, default=30000)
     parser.add_argument('--test', action='store_true')
 
     parser.add_argument('-ep', '--epochs', type=int, default=20)
@@ -65,7 +66,7 @@ def main(arguments):
     parser.add_argument('-eb', '--embedding_size', type=int, default=300)
     parser.add_argument('-rnn', '--rnn_type', type=str, choices=['rnn', 'lstm', 'gru'],
                         default='gru')
-    parser.add_argument('-hs', '--hidden_size', type=int, default=256)
+    parser.add_argument('-hs', '--hidden_size', type=int, default=512)
     parser.add_argument('-nl', '--num_layers', type=int, default=1)
     parser.add_argument('-bi', '--bidirectional', action='store_true')
     parser.add_argument('-ls', '--latent_size', type=int, default=16)
@@ -104,19 +105,19 @@ def main(arguments):
             min_occ=args.min_occ)
 
     model = SentenceVAE(datasets['train'].get_w2i(),
-        embedding_size=args.embedding_size,
-        rnn_type=args.rnn_type,
-        hidden_size=args.hidden_size,
-        word_dropout=args.word_dropout,
-        latent_size=args.latent_size,
-        num_layers=args.num_layers,
-        bidirectional=args.bidirectional)
+                        embedding_size=args.embedding_size,
+                        rnn_type=args.rnn_type,
+                        hidden_size=args.hidden_size,
+                        word_dropout=args.word_dropout,
+                        latent_size=args.latent_size,
+                        num_layers=args.num_layers,
+                        bidirectional=args.bidirectional)
     if torch.cuda.is_available():
         model = model.cuda()
     log.info(model)
 
     if args.tensorboard_logging:
-        writer = SummaryWriter(os.path.join(args.logdir, expierment_name(args,ts)))
+        writer = SummaryWriter(os.path.join(args.logdir, expierment_name(args, ts)))
         writer.add_text("model", str(model))
         writer.add_text("args", str(args))
         writer.add_text("ts", ts)
@@ -143,10 +144,9 @@ def main(arguments):
             data_loader = DataLoader(
                 dataset=datasets[split],
                 batch_size=args.batch_size,
-                shuffle=split=='train',
+                shuffle=bool(split == 'train'),
                 num_workers=cpu_count(),
-                pin_memory=torch.cuda.is_available()
-            )
+                pin_memory=torch.cuda.is_available())
 
             tracker = defaultdict(tensor)
 
@@ -170,7 +170,8 @@ def main(arguments):
 
                 # loss calculation
                 NLL_loss, KL_loss, KL_weight = loss_fn(NLL, logp, batch['target'],
-                    batch['length'], mean, logv, args.anneal_function, step, args.k, args.x0)
+                                                       batch['length'], mean, logv,
+                                                       args.anneal_function, step, args.k, args.x0)
                 loss = (NLL_loss + KL_weight * KL_loss) / batch_size
                 NLL_loss /= batch_size
                 KL_loss /= batch_size
