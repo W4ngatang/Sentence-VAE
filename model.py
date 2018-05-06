@@ -254,8 +254,6 @@ class SentenceVAE(nn.Module):
 
 
     def inference(self, n=4, z=None, max_seq_len=50):
-        # TODO(Alex): wtf is this
-
         if z is None:
             batch_size = n
             z = to_var(torch.randn([batch_size, self.latent_size]))
@@ -278,7 +276,7 @@ class SentenceVAE(nn.Module):
         running_seqs = torch.arange(0, batch_size, out=self.tensor()).long() # idx of still generating sequences with respect to current loop
 
         generations = self.tensor(batch_size, max_seq_len).fill_(self.pad_idx).long()
-
+        pdb.set_trace()
         t = 0
         while(t < max_seq_len and len(running_seqs)>0):
 
@@ -527,14 +525,14 @@ class SentenceAE(nn.Module):
         return hidden
 
     def inference(self, n=4, z=None, max_seq_len=50):
-
+        pdb.set_trace()
         if z is None:
             batch_size = n
-            z = to_var(torch.randn([batch_size, self.latent_size]))
+            z = to_var(torch.randn([batch_size, self.hidden_size]))
         else:
             batch_size = z.size(0)
 
-        hidden = self.latent2hidden(z)
+        hidden = z #self.latent2hidden(z)
 
         if self.bidirectional or self.num_layers > 1:
             # unflatten hidden state

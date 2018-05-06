@@ -11,6 +11,7 @@ import logging as log
 
 import torch
 import torch.optim as optim
+from torch.nn.utils import clip_grad_norm
 import numpy as np
 from multiprocessing import cpu_count
 from tensorboardX import SummaryWriter
@@ -66,6 +67,7 @@ def main(arguments):
     parser.add_argument('--lr_decay_factor', type=float, default=0.5)
     parser.add_argument('-p', '--patience', type=int, default=5)
     parser.add_argument('--sched_patience', type=int, default=0)
+    parser.add_argument('-mg', '--max_grad_norm', type=float, default=5.)
 
     parser.add_argument('-m', '--model', type=str, choices=['vae', 'ae'], default='vae')
     parser.add_argument('-eb', '--embedding_size', type=int, default=300)
@@ -147,10 +149,11 @@ def main(arguments):
         os.makedirs(save_model_path)
 
     NLL = torch.nn.NLLLoss(size_average=False, ignore_index=datasets['train'].pad_idx)
+    params = model.parameters()
     if args.optimizer == 'sgd':
-        optimizer = optim.SGD(model.parameters(), lr=args.learning_rate)
+        optimizer = optim.SGD(params, lr=args.learning_rate)
     elif args.optimizer == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+        optimizer = optim.Adam(params, lr=args.learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                      factor=args.lr_decay_factor,
                                                      patience=args.sched_patience,
@@ -213,6 +216,8 @@ def main(arguments):
                 if split == 'train':
                     optimizer.zero_grad()
                     loss.backward()
+                    if args.max_grad_norm:
+                        grad_norm = clip_grad_norm(params, args.max_grad_norm)
                     optimizer.step()
                     step += 1
 
