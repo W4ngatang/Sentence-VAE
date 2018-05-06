@@ -19,22 +19,23 @@ class PTB(Dataset):
         self.data_dir = data_dir
         self.split = split
         self.max_sequence_length = kwargs.get('max_sequence_length', 50)
-        self.min_occ = kwargs.get('min_occ', 3)
+        self.min_occ = kwargs.get('min_occ', 4)
         self.max_vocab_size = kwargs.get('max_vocab_size', 30000)
 
-        self.raw_data_path = os.path.join(data_dir, 'ptb.'+split+'.txt')
-        self.data_file = os.path.join(data_dir, 'ptb.'+split+'.json')
-        self.vocab_file = 'ptb.vocab.json'
+        self.raw_data_file = os.path.join(data_dir, split+'.txt')
+        self.data_file = os.path.join(data_dir, split + '.json')
+        self.vocab_file = os.path.join(data_dir, 'vocab.json')
 
         if create_data:
-            print("Creating new %s ptb data."%split.upper())
+            print("Creating new %s data." % split.upper())
             self._create_data()
 
-        elif not os.path.exists(os.path.join(self.data_dir, self.data_file)):
-            print("%s preprocessed file not found at %s. Creating new."%(split.upper(), os.path.join(self.data_dir, self.data_file)))
+        elif not os.path.exists(self.data_file):
+            print("%s preprocessed file not found at %s. Creating new." % (split.upper(), self.data_file))
             self._create_data()
 
         else:
+            print("Loading data from %s." % self.data_file)
             self._load_data()
 
 
@@ -79,15 +80,15 @@ class PTB(Dataset):
 
     def _load_data(self, vocab=True):
 
-        with open(os.path.join(self.data_dir, self.data_file), 'r') as file:
+        with open(self.data_file, 'r') as file:
             self.data = json.load(file)
         if vocab:
-            with open(os.path.join(self.data_dir, self.vocab_file), 'r') as file:
+            with open(self.vocab_file, 'r') as file:
                 vocab = json.load(file)
             self.w2i, self.i2w = vocab['w2i'], vocab['i2w']
 
     def _load_vocab(self):
-        with open(os.path.join(self.data_dir, self.vocab_file), 'r') as vocab_file:
+        with open(self.vocab_file, 'r') as vocab_file:
             vocab = json.load(vocab_file)
 
         self.w2i, self.i2w = vocab['w2i'], vocab['i2w']
@@ -100,33 +101,35 @@ class PTB(Dataset):
             self._load_vocab()
 
         data = defaultdict(dict)
-        with open(self.raw_data_path, 'r') as file:
+        with open(self.raw_data_file, 'r') as file:
 
             for i, line in enumerate(file):
 
                 words = nltk.word_tokenize(line)
 
-                input = ['<sos>'] + words
-                input = input[:self.max_sequence_length]
+                #input = ['<sos>'] + words
+                #input = input[:self.max_sequence_length]
+                input = words[:self.max_sequence_length]
 
-                target = words[:self.max_sequence_length-1]
-                target = target + ['<eos>']
+                #target = words[:self.max_sequence_length-1]
+                #target = target + ['<eos>']
+                target = words[:self.max_sequence_length]
 
                 assert len(input) == len(target), "%i, %i" % (len(input), len(target))
                 length = len(input)
 
-                input.extend(['<pad>'] * (self.max_sequence_length-length))
-                target.extend(['<pad>'] * (self.max_sequence_length-length))
+                #input.extend(['<pad>'] * (self.max_sequence_length-length))
+                #target.extend(['<pad>'] * (self.max_sequence_length-length))
 
-                input = [self.w2i.get(w, self.w2i['<unk>']) for w in input]
-                target = [self.w2i.get(w, self.w2i['<unk>']) for w in target]
+                #input = [self.w2i.get(w, self.w2i['<unk>']) for w in input]
+                #target = [self.w2i.get(w, self.w2i['<unk>']) for w in target]
 
                 id = len(data)
                 data[id]['input'] = input
                 data[id]['target'] = target
                 data[id]['length'] = length
 
-        with io.open(os.path.join(self.data_dir, self.data_file), 'wb') as data_file:
+        with io.open(self.data_file, 'wb') as data_file:
             data = json.dumps(data, ensure_ascii=False)
             data_file.write(data.encode('utf8', 'replace'))
 
@@ -145,7 +148,7 @@ class PTB(Dataset):
             i2w[len(w2i)] = st
             w2i[st] = len(w2i)
 
-        with open(self.raw_data_path, 'r') as file:
+        with open(self.raw_data_file, 'r') as file:
 
             for i, line in enumerate(file):
                 words = nltk.word_tokenize(line)
@@ -162,7 +165,7 @@ class PTB(Dataset):
         print("Vocabulary of %i keys created." % len(w2i))
 
         vocab = dict(w2i=w2i, i2w=i2w)
-        with io.open(os.path.join(self.data_dir, self.vocab_file), 'wb') as vocab_file:
+        with io.open(self.vocab_file, 'wb') as vocab_file:
             data = json.dumps(vocab, ensure_ascii=False)
             vocab_file.write(data.encode('utf8', 'replace'))
 

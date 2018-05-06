@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import time
+import math
 import random
 import argparse
 import ipdb as pdb
@@ -17,10 +18,11 @@ from torch.utils.data import DataLoader
 from collections import OrderedDict, defaultdict
 
 from ptb import PTB
-from utils import to_var, idx2word, expierment_name
-from model import SentenceVAE
+from utils import to_var, idx2word, experiment_name
+from model import SentenceVAE, SentenceAE
 
 SCR_PREFIX = '/misc/vlgscratch4/BowmanGroup/awang/'
+EPS = 1e-3
 
 def kl_anneal_function(anneal_function, step, k, x0):
     if anneal_function == 'logistic':
@@ -35,20 +37,21 @@ def loss_fn(NLL, logp, target, length, mean, logv, anneal_function, step, k, x0)
     logp = logp.view(-1, logp.size(2))
 
     # Negative Log Likelihood
-    NLL_loss = NLL(logp, target)
+    nll_loss = NLL(logp, target)
 
     # KL Divergence
-    KL_loss = -0.5 * torch.sum(1 + logv - mean.pow(2) - logv.exp())
-    KL_weight = kl_anneal_function(anneal_function, step, k, x0)
+    kl_loss = -0.5 * torch.sum(1 + logv - mean.pow(2) - logv.exp())
+    kl_weight = kl_anneal_function(anneal_function, step, k, x0)
 
-    return NLL_loss, KL_loss, KL_weight
+    return nll_loss, kl_loss, kl_weight
 
 def main(arguments):
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--seed', help='random seed', type=int, default=19)
-    parser.add_argument('--run_name', help='prefix to save ckpts to', type=str,
+    parser.add_argument('--run_dir', help='prefix to save ckpts to', type=str,
                         default=SCR_PREFIX + 'ckpts/svae/test/')
+    parser.add_argument('--log_file', help='file to log to', type=str, default='')
     parser.add_argument('--data_dir', type=str, default='data')
     parser.add_argument('--create_data', action='store_true')
     parser.add_argument('--max_sequence_length', type=int, default=40)
@@ -56,13 +59,15 @@ def main(arguments):
     parser.add_argument('--max_vocab_size', type=int, default=30000)
     parser.add_argument('--test', action='store_true')
 
-    parser.add_argument('-ep', '--epochs', type=int, default=20)
+    parser.add_argument('-ep', '--epochs', type=int, default=10)
     parser.add_argument('-bs', '--batch_size', type=int, default=128)
     parser.add_argument('-o', '--optimizer', type=str, choices=['sgd', 'adam'], default='adam')
     parser.add_argument('-lr', '--learning_rate', type=float, default=0.001)
     parser.add_argument('--lr_decay_factor', type=float, default=0.5)
     parser.add_argument('-p', '--patience', type=int, default=5)
+    parser.add_argument('--sched_patience', type=int, default=0)
 
+    parser.add_argument('-m', '--model', type=str, choices=['vae', 'ae'], default='vae')
     parser.add_argument('-eb', '--embedding_size', type=int, default=300)
     parser.add_argument('-rnn', '--rnn_type', type=str, choices=['rnn', 'lstm', 'gru'],
                         default='gru')
@@ -72,6 +77,10 @@ def main(arguments):
     parser.add_argument('-ls', '--latent_size', type=int, default=16)
     parser.add_argument('-wd', '--word_dropout', type=float, default=0.5)
 
+    parser.add_argument('-d', '--denoise', action='store_true')
+    parser.add_argument('-pd', '--prob_drop', type=float, default=0.1)
+    parser.add_argument('-ps', '--prob_swap', type=float, default=0.1)
+
     parser.add_argument('-af', '--anneal_function', type=str, choices=['logistic', 'linear'],
                         default='logistic')
     parser.add_argument('-k', '--k', type=float, default=0.0025)
@@ -79,12 +88,12 @@ def main(arguments):
 
     parser.add_argument('-v', '--print_every', type=int, default=50)
     parser.add_argument('-tb', '--tensorboard_logging', action='store_true')
-    parser.add_argument('-log', '--logdir', type=str, default='logs')
-    parser.add_argument('-bin', '--save_model_path', type=str, default='bin')
 
     args = parser.parse_args(arguments)
 
     log.basicConfig(format="%(asctime)s: %(message)s", level=log.INFO, datefmt='%m/%d %I:%M:%S %p')
+    if args.log_file:
+        log.getLogger().addHandler(log.FileHandler(args.log_file))
     log.info(args)
     ts = time.strftime('%Y-%b-%d-%H:%M:%S', time.gmtime())
 
@@ -104,24 +113,36 @@ def main(arguments):
             max_sequence_length=args.max_sequence_length,
             min_occ=args.min_occ)
 
-    model = SentenceVAE(datasets['train'].get_w2i(),
-                        embedding_size=args.embedding_size,
-                        rnn_type=args.rnn_type,
-                        hidden_size=args.hidden_size,
-                        word_dropout=args.word_dropout,
-                        latent_size=args.latent_size,
-                        num_layers=args.num_layers,
-                        bidirectional=args.bidirectional)
+    if args.model == 'vae':
+        model = SentenceVAE(args, datasets['train'].get_w2i(),
+                            embedding_size=args.embedding_size,
+                            rnn_type=args.rnn_type,
+                            hidden_size=args.hidden_size,
+                            word_dropout=args.word_dropout,
+                            latent_size=args.latent_size,
+                            num_layers=args.num_layers,
+                            bidirectional=args.bidirectional)
+    elif args.model == 'ae':
+        model = SentenceAE(args, datasets['train'].get_w2i(),
+                           embedding_size=args.embedding_size,
+                           rnn_type=args.rnn_type,
+                           hidden_size=args.hidden_size,
+                           word_dropout=args.word_dropout,
+                           latent_size=args.latent_size,
+                           num_layers=args.num_layers,
+                           bidirectional=args.bidirectional)
+    if args.denoise:
+        log.info("DENOISING!")
     if torch.cuda.is_available():
         model = model.cuda()
     log.info(model)
 
     if args.tensorboard_logging:
-        writer = SummaryWriter(os.path.join(args.logdir, expierment_name(args, ts)))
+        writer = SummaryWriter(os.path.join(args.run_dir, experiment_name(args, ts)))
         writer.add_text("model", str(model))
         writer.add_text("args", str(args))
         writer.add_text("ts", ts)
-    save_model_path = os.path.join(args.save_model_path, args.run_name)
+    save_model_path = args.run_dir
     if not os.path.exists(save_model_path):
         os.makedirs(save_model_path)
 
@@ -132,23 +153,27 @@ def main(arguments):
         optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                      factor=args.lr_decay_factor,
-                                                     patience=0,
+                                                     patience=args.sched_patience,
                                                      verbose=True)
     tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.Tensor
+    batch_size = args.batch_size
     step, stop_training = 0, 0
     global_tracker = {'best_epoch': -1, 'best_score': -1, 'history': []}
     for epoch in range(args.epochs):
         if stop_training:
             break
         for split in splits:
-            data_loader = DataLoader(
-                dataset=datasets[split],
-                batch_size=args.batch_size,
-                shuffle=bool(split == 'train'),
-                num_workers=cpu_count(),
-                pin_memory=torch.cuda.is_available())
+            #data_loader = DataLoader(
+            #    dataset=datasets[split],
+            #    batch_size=args.batch_size,
+            #    shuffle=bool(split == 'train'),
+            #    num_workers=cpu_count(),
+            #    pin_memory=torch.cuda.is_available())
 
             tracker = defaultdict(tensor)
+            exs = [ex for ex in datasets[split].data.values()]
+            random.shuffle(exs)
+            n_batches = math.ceil(len(exs) / batch_size)
 
             # Enable/Disable Dropout
             if split == 'train':
@@ -159,22 +184,30 @@ def main(arguments):
                 log.info("Validating...")
                 model.eval()
 
-            for iteration, batch in enumerate(data_loader):
-                batch_size = batch['input'].size(0)
+            #for iteration, batch in enumerate(data_loader):
+            for iteration in range(n_batches):
+                raw_batch = exs[iteration*batch_size:(iteration+1)*batch_size]
+                batch = model.prepare_batch([e['input'] for e in raw_batch])
+                batch['src_length'] = model.tensor(batch['src_length']).long()
+                batch['trg_length'] = model.tensor(batch['trg_length']).long()
+
+                b_size = batch['input'].size(0)
                 for k, v in batch.items():
                     if torch.is_tensor(v):
                         batch[k] = to_var(v)
 
                 # Forward pass
-                logp, mean, logv, z = model(batch['input'], batch['length'])
+                logp, mean, logv, z = model(batch['input'], batch['target'],
+                                            batch['src_length'], batch['trg_length'])
 
                 # loss calculation
-                NLL_loss, KL_loss, KL_weight = loss_fn(NLL, logp, batch['target'],
-                                                       batch['length'], mean, logv,
-                                                       args.anneal_function, step, args.k, args.x0)
-                loss = (NLL_loss + KL_weight * KL_loss) / batch_size
-                NLL_loss /= batch_size
-                KL_loss /= batch_size
+                nll_loss, kl_loss, kl_weight = model.loss_fn(logp, batch['target'],
+                                                       batch['trg_length'], mean, logv,
+                                                       args.anneal_function, step,
+                                                       args.k, args.x0)
+                loss = (nll_loss + kl_weight * kl_loss) / b_size
+                nll_loss /= b_size
+                kl_loss /= b_size
 
                 # backward + optimization
                 if split == 'train':
@@ -183,30 +216,35 @@ def main(arguments):
                     optimizer.step()
                     step += 1
 
-                # bookkeepeing
+                # bookkeeping
                 tracker['ELBO'] = torch.cat((tracker['ELBO'], loss.data))
-                tracker['NLL'] = torch.cat((tracker['NLL'], NLL_loss.data))
-                tracker['KL'] = torch.cat((tracker['NLL'], KL_loss.data))
                 loss = loss.data[0]
-                NLL_loss = NLL_loss.data[0]
-                KL_loss = KL_loss.data[0]
+                if args.model == 'vae':
+                    tracker['NLL'] = torch.cat((tracker['NLL'], nll_loss.data))
+                    tracker['KL'] = torch.cat((tracker['NLL'], kl_loss.data))
+                    nll_loss = nll_loss.data[0]
+                    kl_loss = kl_loss.data[0]
+                else:
+                    tracker['NLL'] = torch.cat((tracker['NLL'], model.tensor([0])))
+                    tracker['KL'] = torch.cat((tracker['KL'], model.tensor([0])))
 
                 if args.tensorboard_logging:
-                    writer.add_scalar("%s/ELBO"%split.upper(), loss, epoch*len(data_loader) + iteration)
-                    writer.add_scalar("%s/NLL Loss"%split.upper(), NLL_loss, epoch*len(data_loader) + iteration)
-                    writer.add_scalar("%s/KL Loss"%split.upper(), KL_loss, epoch*len(data_loader) + iteration)
-                    writer.add_scalar("%s/KL Weight"%split.upper(), KL_weight, epoch*len(data_loader) + iteration)
+                    writer.add_scalar("%s/ELBO"%split.upper(), loss, epoch*n_batches + iteration)
+                    writer.add_scalar("%s/NLL Loss"%split.upper(), nll_loss, epoch*n_batches + iteration)
+                    writer.add_scalar("%s/KL Loss"%split.upper(), kl_loss, epoch*n_batches + iteration)
+                    writer.add_scalar("%s/KL Weight"%split.upper(), kl_weight, epoch*n_batches + iteration)
 
-                if iteration % args.print_every == 0 or iteration + 1 == len(data_loader):
+                if iteration % args.print_every == 0 or iteration + 1 == n_batches:
                     log.info("  Batch %04d/%i\tLoss %9.4f\tNLL-Loss %9.4f\tKL-Loss %9.4f\tKL-Weight %6.3f",
-                        iteration, len(data_loader)-1, loss, NLL_loss, KL_loss, KL_weight)
+                        iteration, n_batches-1, loss, nll_loss, kl_loss, kl_weight)
 
-                if split == 'valid': # store the dev sentences?
+                if split == 'valid': # store the dev target sentences
                     if 'target_sents' not in tracker:
                         tracker['target_sents'] = list()
                     tracker['target_sents'] += idx2word(batch['target'].data, \
                             i2w=datasets['train'].get_i2w(), pad_idx=datasets['train'].pad_idx)
-                    tracker['z'] = torch.cat((tracker['z'], z.data), dim=0)
+                    if args.model == 'vae':
+                        tracker['z'] = torch.cat((tracker['z'], z.data), dim=0)
 
             log.info("  Mean ELBO %9.4f, NLL: %9.4f", torch.mean(tracker['ELBO']), torch.mean(tracker['NLL']))
 
@@ -215,6 +253,7 @@ def main(arguments):
 
             # save a dump of all sentences and the encoded latent space
             if split == 'valid':
+                loss = torch.mean(tracker['ELBO'])
                 dump = {'target_sents':tracker['target_sents'], 'z':tracker['z'].tolist()}
                 if not os.path.exists(os.path.join('dumps', ts)):
                     os.makedirs('dumps/' + ts)
@@ -226,13 +265,13 @@ def main(arguments):
                     global_tracker['best_score'] = loss
                     checkpoint_path = os.path.join(save_model_path, "best.mdl")
                     torch.save(model.state_dict(), checkpoint_path)
-                if KL_weight >= 1:
+                if kl_weight >= 1 - EPS:
                     if len(global_tracker['history']) >= args.patience and \
-                            loss > min(global_tracker['history'][-args.patience:]):
+                            loss >= min(global_tracker['history'][-args.patience:]):
                         log.info("Ran out of patience!")
                         stop_training = 1
                     global_tracker['history'].append(loss)
-                    scheduler.step(loss, epoch)
+                scheduler.step(loss, epoch)
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv[1:]))
