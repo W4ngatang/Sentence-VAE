@@ -23,7 +23,6 @@ def kl_anneal_function(anneal_function, step, k, x0):
 
 def noise_fn(sents, prob_drop, prob_swap):
     ''' Apply swap and drop noise to a batch '''
-    # NOTE(Alex): may need to increment lengths for <sos>/<eos> targs
     noisy_batch = []
     for sent in sents:
         drop_noise = random.choices(range(2), weights=[1-prob_drop, prob_drop], k=len(sent))
@@ -172,6 +171,7 @@ class SentenceVAE(nn.Module):
         # decoder input
         sorted_trg_lengths, sorted_idx_trg = torch.sort(trg_length, descending=True)
         trg_sequence = trg_sequence[sorted_idx_trg]
+        trg_embedding = self.embedding(trg_sequence)
         hidden = hidden[sorted_idx_trg]
         hidden = hidden.transpose(0, 1).contiguous()
         '''
@@ -182,8 +182,8 @@ class SentenceVAE(nn.Module):
             hidden = hidden.unsqueeze(0)
         '''
 
-        input_embedding = self.word_dropout(input_embedding)
-        packed_input = rnn_utils.pack_padded_sequence(input_embedding,
+        trg_embedding = self.word_dropout(trg_embedding)
+        packed_input = rnn_utils.pack_padded_sequence(trg_embedding,
                                                       sorted_trg_lengths.data.tolist(),
                                                       batch_first=True)
 
@@ -276,7 +276,6 @@ class SentenceVAE(nn.Module):
         running_seqs = torch.arange(0, batch_size, out=self.tensor()).long() # idx of still generating sequences with respect to current loop
 
         generations = self.tensor(batch_size, max_seq_len).fill_(self.pad_idx).long()
-        pdb.set_trace()
         t = 0
         while(t < max_seq_len and len(running_seqs)>0):
 
@@ -525,7 +524,6 @@ class SentenceAE(nn.Module):
         return hidden
 
     def inference(self, n=4, z=None, max_seq_len=50):
-        pdb.set_trace()
         if z is None:
             batch_size = n
             z = to_var(torch.randn([batch_size, self.hidden_size]))

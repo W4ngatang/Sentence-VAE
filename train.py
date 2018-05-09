@@ -166,13 +166,6 @@ def main(arguments):
         if stop_training:
             break
         for split in splits:
-            #data_loader = DataLoader(
-            #    dataset=datasets[split],
-            #    batch_size=args.batch_size,
-            #    shuffle=bool(split == 'train'),
-            #    num_workers=cpu_count(),
-            #    pin_memory=torch.cuda.is_available())
-
             tracker = defaultdict(tensor)
             exs = [ex for ex in datasets[split].data.values()]
             random.shuffle(exs)
@@ -212,12 +205,16 @@ def main(arguments):
                 nll_loss /= b_size
                 kl_loss /= b_size
 
+                if loss.data[0] != loss.data[0]: # nan detection
+                    log.info("***** UH OH NAN DETECTED *****")
+                    pdb.set_trace()
+
                 # backward + optimization
                 if split == 'train':
                     optimizer.zero_grad()
                     loss.backward()
                     if args.max_grad_norm:
-                        grad_norm = clip_grad_norm(params, args.max_grad_norm)
+                        grad_norm = clip_grad_norm(model.parameters(), args.max_grad_norm)
                     optimizer.step()
                     step += 1
 
