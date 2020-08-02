@@ -50,6 +50,7 @@ def main(arguments):
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--seed', help='random seed', type=int, default=19)
+    parser.add_argument('-gpu', '--gpu_id', help='GPU ID', type=int, default=0)
     parser.add_argument('--run_dir', help='prefix to save ckpts to', type=str,
                         default=SCR_PREFIX + 'ckpts/svae/test/')
     parser.add_argument('--log_file', help='file to log to', type=str, default='')
@@ -103,6 +104,7 @@ def main(arguments):
     random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
+        torch.cuda.set_device(args.gpu_id)
         torch.cuda.manual_seed_all(seed)
 
     splits = ['train', 'valid'] + (['test'] if args.test else [])
